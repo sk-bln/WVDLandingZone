@@ -1,0 +1,218 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "adminUsername": {
+            "type": "string",
+            "defaultValue": "vdiadmin",
+            "metadata": {
+                "description": "The name of the Administrator of the new VM and Domain"
+            }
+        },
+        "adminPassword": {
+            "type": "securestring",
+            "metadata": {
+                "description": "The password for the Administrator account of the new VM and Domain"
+            }
+        },
+        "domainName": {
+            "type": "string",
+            "defaultValue": "vdidemo.de",
+            "metadata": {
+                "description": "The FQDN of the AD Domain created "
+            }
+        },
+        "DC1HostName": {
+            "type": "string",
+            "defaultValue": "VDIDC1",
+            "metadata": {
+                "description": "Name of Domain Controller 1 (gets IP .4)"
+            }
+        },
+        "DC2HostName": {
+            "type": "string",
+            "defaultValue": "VDIDC2",
+            "metadata": {
+                "description": "Name of Domain Controller 2 (gets IP .5)"
+            }
+        },
+        "HubVNetName": {
+            "type": "string",
+            "defaultValue": "HubVNet",
+            "metadata": {
+                "description": "The name of the hub vnet"
+            }
+        },
+        "ADSubnetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.255.0/26",
+            "metadata": {
+                "description": "The address space of the AD Subnet that contains the domain controllers. Must end in .0. DCs will be .4 and .5"
+            }
+        },
+        "DCVMSize": {
+            "type": "string",
+            "defaultValue": "Standard_B2s",
+            "metadata": {
+                "description": "The VM Size of the domain controllers"
+            }
+        },
+        "NetworkResourceGroup": {
+            "type": "string",
+            "defaultValue": "WVDLandingZone",
+            "metadata": {
+                "description": "The resource group containing the virtual network resources"
+            }
+        },
+        "OSDiskType": {
+            "type": "string",
+            "defaultValue": "StandardSSD_LRS",
+            "metadata": {
+                "description": "The resource group containing the virtual network resources"
+            }
+        }
+    },
+    "variables": {
+        "ADSubnetName": "ADSubnet",
+        "ADSubnetStartRange": "[substring(parameters('ADSubnetIPAddressSpace'), 0, lastIndexOf(parameters('ADSubnetIPAddressSpace'),'.0') )]",
+        "DC1IP": "[concat(variables('ADSubnetStartRange'), '.4')]",
+        "DC2IP": "[concat(variables('ADSubnetStartRange'), '.5')]",
+        "DC1-NicName": "[concat(parameters('DC1HostName'),'-nic')]",
+        "DC2-NicName": "[concat(parameters('DC2HostName'),'-nic')]",
+        "DiagStorageAccountName": "[concat('vdistorage', uniquestring(resourceGroup().id))]",
+        "WindowsServerSKU": "2019-Datacenter",
+        "DC1ExtName": "[concat(parameters('DC1HostName'),'/addsc')]"
+
+    },
+    "resources": [
+        {
+            "name": "[variables('DiagStorageAccountName')]",
+            "type": "Microsoft.Storage/storageAccounts",
+            "apiVersion": "2015-06-15",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "displayName": "VM Diagnostic Storage Account"
+            },
+            "properties": {
+                "accountType": "Standard_LRS"
+            }
+        },
+        {
+            "name": "[variables('DC1-NicName')]",
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2018-08-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+
+            ],
+            "tags": {
+                "displayName": "DC1 Network Interface"
+            },
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "DC1IPConfig",
+                        "properties": {
+                            "privateIPAllocationMethod": "Static",
+                            "privateIPAddress": "[variables('DC1IP')]",
+                            "subnet": {
+                                "id": "[resourceId(parameters('NetworkResourceGroup'),'Microsoft.Network/virtualNetworks/subnets', parameters('HubVNetName'), variables('ADSubnetName'))]"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "name": "[parameters('DC1HostName')]",
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2019-03-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', variables('DiagStorageAccountName'))]",
+                "[resourceId('Microsoft.Network/networkInterfaces', variables('DC1-NicName'))]"
+            ],
+            "tags": {
+                "displayName": "Domain Controller 1"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[parameters('DCVMSize')]"
+                },
+                "osProfile": {
+                    "computerName": "[parameters('DC1HostName')]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "adminPassword": "[parameters('adminPassword')]"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "MicrosoftWindowsServer",
+                        "offer": "WindowsServer",
+                        "sku": "[variables('WindowsServerSKU')]",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "DC1OSDisk",
+                        "managedDisk": {
+                            "storageAccountType": "[parameters('OSDiskType')]"
+                        },
+                        "createOption": "FromImage"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('DC1-NicName'))]"
+                        }
+                    ]
+                },
+                "diagnosticsProfile": {
+                    "bootDiagnostics": {
+                        "enabled": true,
+                        "storageUri": "[reference(variables('DiagStorageAccountName'), '2017-10-01').primaryEndpoints['blob']]"
+                    }
+                }
+            }
+        },
+        {
+            "name": "[variables('DC1ExtName')]",
+            "type": "Microsoft.Compute/virtualMachines/extensions",
+            "apiVersion": "2018-06-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "displayName": "DC1/dscExtension"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Compute/virtualMachines', parameters('DC1HostName'))]"
+            ],
+            "properties": {
+                "publisher": "Microsoft.Powershell",
+                "type": "DSC",
+                "typeHandlerVersion": "2.9",
+                "autoUpgradeMinorVersion": true,
+                "settings": {
+                    "url": "https://github.com/mspnp/reference-architectures/raw/master/sharepoint/sharepoint-2016/adds.zip",
+                    "script": "adds-forest.ps1",
+                    "function": "CreateForest"
+                },
+                "protectedSettings": {
+                    "configurationArguments": {
+                        "DomainName": "vdidemo.de",
+                        "DomainNetbiosName": "vdidemo",
+                        "ForwardIpAddress": "192.168.0.4,192.168.0.5",
+                        "AdminCreds": {
+                            "UserName": "vdiadmin",
+                            "Password": "Die3istKlasse!"
+                        },
+                        "SafeModeAdminCreds": {
+                            "UserName": "vdiadmin",
+                            "Password": "Die3istKlasse!"
+                        }
+                    }
+                }
+            }            
+        }
+    ], 
+    "outputs": {
+    }
+}

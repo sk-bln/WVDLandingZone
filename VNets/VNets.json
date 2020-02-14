@@ -1,0 +1,706 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "HubVNetName": 
+        {
+        "type": "string",
+        "defaultValue": "HubVNet",
+        "metadata": {
+                "description": "The name of the hub vnet"
+            }
+        },
+        "HubVNetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.254.0/23",
+            "metadata": {
+                "description": "The address space of the hub vnet, must contain the address spaces of the subnets"
+            }
+        },
+        "GatewaySubnetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.255.240/28",
+            "metadata": {
+                "description": "The address space of the Gateway Subnet, /28 recommended"
+            }
+        },
+        "BastionSubnetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.255.224/28",
+            "metadata": {
+                "description": "The address space of the Bastion Subnet that contains the Azure Bastion host"
+            }
+        },
+        "ADSubnetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.255.0/26",
+            "metadata": {
+                "description": "The address space of the AD Subnet that contains the domain controllers. Must end in .0. DCs will be .4 and .5"
+            }
+        },
+        "FirewallSubnetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.254.0/26",
+            "metadata": {
+                "description": "The address space of the DMZ Subnet that contains the firewall, must be at least /26. Must end in .0. Firewall will be .4"
+            }
+        }, 
+        "VDIVNetName": 
+        {
+        "type": "string",
+        "defaultValue": "VDIVNet",
+        "metadata": {
+                "description": "The name of the VDI vnet"
+            }
+        },
+        "VDIVNetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.0.0/17",
+            "metadata": {
+                "description": "The address space of the VDI vnet, must contain the address spaces of the subnets"
+            }
+        },
+        "InfraSubnetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.126.0/24",
+            "metadata": {
+                "description": "The address space of the Infrastructure subnet (contains fileservers), must be contained in VDI VNet address space"
+            }
+        },
+        "ConnectorSubnetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.127.0/24",
+            "metadata": {
+                "description": "The address space of the Connector subnet (contains Citrix Cloud Connectors if required), must be contained in VDI VNet address space"
+            }
+        },
+        "VDISubnetIPAddressSpace": {
+            "type": "string",
+            "defaultValue": "172.16.0.0/18",
+            "metadata": {
+                "description": "The address space of the VDI subnet (contains VDIs and RDSHs), must be contained in VDI VNet address space"
+            }
+        },
+        "BastionHostName": {
+            "type": "string",
+            "defaultValue": "VDIBastion",
+            "metadata": {
+                "description": "Name of Azure Bastion resource"
+            }
+        },
+        "DC1HostName": {
+            "type": "string",
+            "defaultValue": "VDIDC1",
+            "metadata": {
+                "description": "Name of Domain Controller 1 (gets IP .4)"
+            }
+        },
+        "DC2HostName": {
+            "type": "string",
+            "defaultValue": "VDIDC2",
+            "metadata": {
+                "description": "Name of Domain Controller 2 (gets IP .5)"
+            }
+        },
+        "VNetGatewaySKU":  {
+            "type": "string",
+            "defaultValue": "Basic",
+            "allowedValues": [
+                "Basic", "VpnGw1", "VpnGw1AZ", "VpnGw2", "VpnGw2AZ", "VpnGw3", "VpnGw3AZ"
+            ],
+            "metadata": {
+                "description": "SKU of the VNet Gateway, Gen1 used"
+            }
+        }
+
+    },
+    "variables": {
+        "HubtoVDIPeeringName": "[concat(parameters('HubVNetName'), '-', parameters('VDIVNetName'))]",
+        "VDItoHubPeeringName": "[concat(parameters('VDIVNetName'), '-', parameters('HubVNetName'))]",
+        "ADSubnetStartRange": "[substring(parameters('ADSubnetIPAddressSpace'), 0, lastIndexOf(parameters('ADSubnetIPAddressSpace'),'.0') )]",
+        "DC1IP": "[concat(variables('ADSubnetStartRange'), '.4')]",
+        "DC2IP": "[concat(variables('ADSubnetStartRange'), '.5')]",
+        "FirewallSubnetStartRange": "[substring(parameters('FirewallSubnetIPAddressSpace'), 0, lastIndexOf(parameters('FirewallSubnetIPAddressSpace'),'.0') )]",
+        "FirewallIP": "[concat(variables('FirewallSubnetStartRange'), '.4')]",
+        "BastionPIPName": "[concat(parameters('BastionHostName'),'-pip')]",
+        "BastionNSGName": "[concat(parameters('BastionHostName'),'-nsg')]",
+        "VGWPIPName": "VDIGateway-pip",
+        "VGWName": "VDIVNetGateway",
+        "VGWType": "VPN",
+        "VGWIsMultiAZ": "[contains(parameters('VNetGatewaySKU'),'AZ')]",
+        "FirewallName": "VDIFirewall",
+        "FirewallPIPName": "[concat(variables('FirewallName'),'-pip')]",
+        "HubRouteTableName": "VDIRouteTable"
+
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Network/routeTables",
+            "apiVersion": "2019-09-01",
+            "name": "[variables('HubRouteTableName')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "disableBgpRoutePropagation": false,
+                "routes": [
+                    {
+                        "name": "ExternalTraffic",
+                        "properties": {
+                            "addressPrefix": "0.0.0.0/0",
+                            "nextHopType": "VirtualAppliance",
+                            "nextHopIpAddress": "[variables('FirewallIP')]"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "name": "[parameters('HubVNetName')]",
+            "type": "Microsoft.Network/virtualNetworks",
+            "apiVersion": "2019-08-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/routeTables', variables('HubRouteTableName'))]"
+            ],
+            "tags": {
+                "displayName": "[parameters('HubVNetName')]"
+            },
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "[parameters('HubVNetIPAddressSpace')]"
+                    ]
+                },
+                "dhcpOptions": {
+                    "dnsServers": [
+                        "[variables('DC1IP')]",
+                        "[variables('DC2IP')]"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "GatewaySubnet",
+                        "properties": {
+                            "addressPrefix": "[parameters('GatewaySubnetIPAddressSpace')]"
+                        }
+                    },
+                    {
+                        "name": "AzureBastionSubnet",
+                        "properties": {
+                            "addressPrefix": "[parameters('BastionSubnetIPAddressSpace')]"
+                        }
+                    },
+                    {
+                        "name": "AzureFirewallSubnet",
+                        "properties": {
+                            "addressPrefix": "[parameters('FirewallSubnetIPAddressSpace')]"
+                        }
+                    },
+                    {
+                        "name": "ADSubnet",
+                        "properties": {
+                            "addressPrefix": "[parameters('ADSubnetIPAddressSpace')]",
+                            "routeTable": {
+                                "id": "[resourceId('Microsoft.Network/routeTables', variables('HubRouteTableName'))]"
+                            }
+                        }
+                    }
+                ]
+            },
+            "resources": [
+                {
+                    "apiVersion": "2019-08-01",
+                    "type": "virtualNetworkPeerings",
+                    "name": "[variables('HubtoVDIPeeringName')]",
+                    "location": "[resourceGroup().location]",
+                    "dependsOn": [
+                        "[resourceId('Microsoft.Network/virtualNetworks/', parameters('HubVNetName'))]",
+                        "[resourceId('Microsoft.Network/virtualNetworks/', parameters('VDIVNetName'))]"
+                    ],
+                    "comments": "This is the peering from Hub VNet to VDI VNet",
+                    "properties": {
+                        "allowVirtualNetworkAccess": true,
+                        "allowForwardedTraffic": true,
+                        "allowGatewayTransit": true,
+                        "useRemoteGateways": false,
+                        "remoteVirtualNetwork": {
+                            "id": "[resourceId('Microsoft.Network/virtualNetworks',parameters('VDIVNetName'))]"
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "apiVersion": "2019-02-01",
+            "type": "Microsoft.Network/publicIpAddresses",
+            "name": "[variables('VGWPIPName')]",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "[if(variables('VGWIsMultiAZ'),'Standard', 'Basic')]"
+            },
+            "properties": {
+                "publicIPAllocationMethod": "Dynamic"
+            }
+        },
+        {
+            "name": "[variables('VGWName')]",
+            "type": "Microsoft.Network/virtualNetworkGateways",
+            "apiVersion": "2019-09-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIPAddresses', variables('VGWPIPName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', parameters('HubVNetName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "vnetGatewayConfig",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('HubVNetName'), 'GatewaySubnet')]"
+                            },
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('VGWPIPName'))]"
+                            }
+                        }
+                    }
+                ],
+                "vpnGatewayGeneration": "Generation1",
+                "sku": {
+                    "name": "[parameters('VNetGatewaySKU')]",
+                    "tier": "[parameters('VNetGatewaySKU')]"
+                },
+                "gatewayType": "Vpn",
+                "vpnType": "RouteBased",
+                "enableBgp": false
+            }
+        },
+        {
+            "name": "[parameters('VDIVNetName')]",
+            "type": "Microsoft.Network/virtualNetworks",
+            "apiVersion": "2019-08-01",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/routeTables', variables('HubRouteTableName'))]"
+            ],
+            "tags": {
+                "displayName": "[parameters('VDIVNetName')]"
+            },
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "[parameters('VDIVNetIPAddressSpace')]"
+                    ]
+                },
+                "dhcpOptions": {
+                    "dnsServers": [
+                        "[variables('DC1IP')]",
+                        "[variables('DC2IP')]"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "InfraSubnet",
+                        "properties": {
+                            "addressPrefix": "[parameters('InfraSubnetIPAddressSpace')]",
+                            "routeTable": {
+                                "id": "[resourceId('Microsoft.Network/routeTables', variables('HubRouteTableName'))]"
+                            }
+                        }
+                    },
+                    {
+                        "name": "ConnectorSubnet",
+                        "properties": {
+                            "addressPrefix": "[parameters('ConnectorSubnetIPAddressSpace')]",
+                            "routeTable": {
+                                "id": "[resourceId('Microsoft.Network/routeTables', variables('HubRouteTableName'))]"
+                            }
+                        }
+                    },
+                    {
+                        "name": "VDISubnet",
+                        "properties": {
+                            "addressPrefix": "[parameters('VDISubnetIPAddressSpace')]",
+                            "routeTable": {
+                                "id": "[resourceId('Microsoft.Network/routeTables', variables('HubRouteTableName'))]"
+                            }
+                        }
+                    }
+                ]
+            },
+            "resources": [
+                {
+                    "apiVersion": "2019-08-01",
+                    "type": "virtualNetworkPeerings",
+                    "name": "[variables('VDItoHubPeeringName')]",
+                    "location": "[resourceGroup().location]",
+                    "dependsOn": [
+                        "[concat('Microsoft.Network/virtualNetworks/', parameters('HubVNetName'))]",
+                        "[concat('Microsoft.Network/virtualNetworks/', parameters('VDIVNetName'))]",
+                        "[concat('Microsoft.Network/virtualNetworkGateways/', variables('VGWName'))]"
+                    ],
+                    "comments": "This is the peering from VDI VNet to Hub VNet",
+                    "properties": {
+                        "allowVirtualNetworkAccess": true,
+                        "allowForwardedTraffic": true,
+                        "allowGatewayTransit": false,
+                        "useRemoteGateways": true,
+                        "remoteVirtualNetwork": {
+                            "id": "[resourceId('Microsoft.Network/virtualNetworks',parameters('HubVNetName'))]"
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "apiVersion": "2019-02-01",
+            "type": "Microsoft.Network/publicIpAddresses",
+            "name": "[variables('BastionPIPName')]",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "Standard"
+            },
+            "properties": {
+                "publicIPAllocationMethod": "Static"
+            }
+        },
+        {
+            "apiVersion": "2019-09-01",
+            "type": "Microsoft.Network/bastionHosts",
+            "name": "[parameters('BastionHostName')]",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIpAddresses', variables('BastionPIPName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', parameters('HubVNetName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "IpConf",
+                        "properties": {
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('HubVNetName'), 'AzureBastionSubnet')]"
+                            },
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIpAddresses', variables('BastionPIPName'))]"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "apiVersion": "2019-02-01",
+            "type": "Microsoft.Network/publicIpAddresses",
+            "name": "[variables('FirewallPIPName')]",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "Standard"
+            },
+            "properties": {
+                "publicIPAllocationMethod": "Static"
+            }
+        },
+        {
+            "type": "Microsoft.Network/azureFirewalls",
+            "apiVersion": "2019-09-01",
+            "name": "[variables('FirewallName')]",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIpAddresses', variables('FirewallPIPName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', parameters('HubVNetName'))]"
+            ],
+            "properties": {
+                "sku": {
+                    "name": "AZFW_VNet",
+                    "tier": "Standard"
+                },
+                "threatIntelMode": "Alert",
+                "additionalProperties": {},
+                "ipConfigurations": [
+                    {
+                        "name": "IpConf",
+                        "properties": {
+                            "privateIPAddress": "[variables('FirewallIP')]",
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIpAddresses', variables('FirewallPIPName'))]"
+                            },
+                            "subnet": {
+                                "id":"[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('HubVNetName'), 'AzureFirewallSubnet')]"
+                            }
+                        }
+                    }
+                ],
+                "networkRuleCollections": [
+                    {
+                        "name": "StorageAccessCollection",
+                        "properties": {
+                            "priority": 300,
+                            "action": {
+                                "type": "Allow"
+                            },
+                            "rules": [
+                                {
+                                    "name": "StorageRule",
+                                    "protocols": [
+                                        "Any"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "destinationAddresses": [
+                                        "Storage"
+                                    ],
+                                    "sourceIpGroups": [],
+                                    "destinationIpGroups": [],
+                                    "destinationFqdns": [],
+                                    "destinationPorts": [
+                                        "443"
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "AzureADCollection",
+                        "properties": {
+                            "priority": 301,
+                            "action": {
+                                "type": "Allow"
+                            },
+                            "rules": [
+                                {
+                                    "name": "EnableAAD",
+                                    "protocols": [
+                                        "Any"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "destinationAddresses": [
+                                        "AzureActiveDirectory"
+                                    ],
+                                    "sourceIpGroups": [],
+                                    "destinationIpGroups": [],
+                                    "destinationFqdns": [],
+                                    "destinationPorts": [
+                                        "*"
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "Monitoring",
+                        "properties": {
+                            "priority": 303,
+                            "action": {
+                                "type": "Allow"
+                            },
+                            "rules": [
+                                {
+                                    "name": "Monitor",
+                                    "protocols": [
+                                        "TCP"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "destinationAddresses": [
+                                        "AzureMonitor"
+                                    ],
+                                    "sourceIpGroups": [],
+                                    "destinationIpGroups": [],
+                                    "destinationFqdns": [],
+                                    "destinationPorts": [
+                                        "*"
+                                    ]
+                                },
+                                {
+                                    "name": "Backup",
+                                    "protocols": [
+                                        "TCP"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "destinationAddresses": [
+                                        "AzureBackup"
+                                    ],
+                                    "sourceIpGroups": [],
+                                    "destinationIpGroups": [],
+                                    "destinationFqdns": [],
+                                    "destinationPorts": [
+                                        "*"
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "applicationRuleCollections": [
+                    {
+                        "name": "Microsoft",
+                        "properties": {
+                            "priority": 202,
+                            "action": {
+                                "type": "Allow"
+                            },
+                            "rules": [
+                                {
+                                    "name": "Allow Microsoft",
+                                    "protocols": [
+                                        {
+                                            "protocolType": "Http",
+                                            "port": 80
+                                        },
+                                        {
+                                            "protocolType": "Https",
+                                            "port": 443
+                                        }
+                                    ],
+                                    "fqdnTags": [],
+                                    "targetFqdns": [
+                                        "*.microsoft.com"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "sourceIpGroups": []
+                                },
+                                {
+                                    "name": "Allow login",
+                                    "protocols": [
+                                        {
+                                            "protocolType": "Https",
+                                            "port": 443
+                                        }
+                                    ],
+                                    "fqdnTags": [],
+                                    "targetFqdns": [
+                                        "login.microsoftonline.com"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "sourceIpGroups": []
+                                },
+                                {
+                                    "name": "AADCDN",
+                                    "protocols": [
+                                        {
+                                            "protocolType": "Https",
+                                            "port": 443
+                                        }
+                                    ],
+                                    "fqdnTags": [],
+                                    "targetFqdns": [
+                                        "aadcdn.msftauth.net",
+                                        "aadcdn.msauth.net"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "sourceIpGroups": []
+                                },
+                                {
+                                    "name": "Live Login",
+                                    "protocols": [
+                                        {
+                                            "protocolType": "Https",
+                                            "port": 443
+                                        }
+                                    ],
+                                    "fqdnTags": [],
+                                    "targetFqdns": [
+                                        "login.live.com",
+                                        "logincdn.msauth.net"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "sourceIpGroups": []
+                                },
+                                {
+                                    "name": "Azure Management",
+                                    "protocols": [
+                                        {
+                                            "protocolType": "Https",
+                                            "port": 443
+                                        }
+                                    ],
+                                    "fqdnTags": [],
+                                    "targetFqdns": [
+                                        "management.azure.com"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "sourceIpGroups": []
+                                },
+                                {
+                                    "name": "Update Management",
+                                    "protocols": [
+                                        {
+                                            "protocolType": "Https",
+                                            "port": 443
+                                        }
+                                    ],
+                                    "fqdnTags": [],
+                                    "targetFqdns": [
+                                        "*.azure-automation.net",
+                                        "*.oms.opinsights.azure.com",
+                                        "*.ods.opinsights.azure.com"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "sourceIpGroups": []
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "WindowsUpdate",
+                        "properties": {
+                            "priority": 203,
+                            "action": {
+                                "type": "Allow"
+                            },
+                            "rules": [
+                                {
+                                    "name": "WindowsUpdate",
+                                    "protocols": [
+                                        {
+                                            "protocolType": "Http",
+                                            "port": 80
+                                        },
+                                        {
+                                            "protocolType": "Https",
+                                            "port": 443
+                                        }
+                                    ],
+                                    "fqdnTags": [
+                                        "WindowsUpdate"
+                                    ],
+                                    "targetFqdns": [],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "sourceIpGroups": []
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "natRuleCollections": [
+                    
+                ]
+            }
+        }
+        
+        
+
+    ],
+    "outputs": {}
+}
