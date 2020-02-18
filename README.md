@@ -1,5 +1,7 @@
 # WVDLandingZone - a secure landing zone for Windows Virtual Desktop and Citrix Cloud in Azure
 
+Notice - this is not Microsoft official guidance. Just an architecture based on my experience
+
 ## General structure
 
 Hub VNet
