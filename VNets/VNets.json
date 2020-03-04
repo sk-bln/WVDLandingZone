@@ -88,20 +88,6 @@
                 "description": "Name of Azure Bastion resource"
             }
         },
-        "DC1HostName": {
-            "type": "string",
-            "defaultValue": "VDIDC1",
-            "metadata": {
-                "description": "Name of Domain Controller 1 (gets IP .4)"
-            }
-        },
-        "DC2HostName": {
-            "type": "string",
-            "defaultValue": "VDIDC2",
-            "metadata": {
-                "description": "Name of Domain Controller 2 (gets IP .5)"
-            }
-        },
         "VNetGatewaySKU":  {
             "type": "string",
             "defaultValue": "Basic",
@@ -110,6 +96,16 @@
             ],
             "metadata": {
                 "description": "SKU of the VNet Gateway, Gen1 used"
+            }
+        },
+        "VNetGatewayType": {
+           "type": "string",
+           "defaultValue": "RouteBased",
+           "allowedValues": [
+                "RouteBased", "PolicyBased"
+            ],
+           "metadata": {
+                "description": "Type of the VPN Gateway (RouteBased for IKEv2, PolicyBased for IKEv1)"
             }
         }
 
@@ -270,8 +266,8 @@
                     "name": "[parameters('VNetGatewaySKU')]",
                     "tier": "[parameters('VNetGatewaySKU')]"
                 },
-                "gatewayType": "Vpn",
-                "vpnType": "RouteBased",
+                "gatewayType": "[variables('VGWType')]",
+                "vpnType": "[parameters('VNetGatewayType')]",
                 "enableBgp": false
             }
         },
@@ -532,6 +528,35 @@
                                     "destinationFqdns": [],
                                     "destinationPorts": [
                                         "*"
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "KMS",
+                        "properties": {
+                            "priority": 304,
+                            "action": {
+                                "type": "Allow"
+                            },
+                            "rules": [
+                                {
+                                    "name": "KMS",
+                                    "protocols": [
+                                        "TCP"
+                                    ],
+                                    "sourceAddresses": [
+                                        "*"
+                                    ],
+                                    "destinationAddresses": [
+                                        "23.102.135.246"
+                                    ],
+                                    "sourceIpGroups": [],
+                                    "destinationIpGroups": [],
+                                    "destinationFqdns": [],
+                                    "destinationPorts": [
+                                        "1688"
                                     ]
                                 }
                             ]

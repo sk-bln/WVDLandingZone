@@ -4,7 +4,11 @@
     "parameters": {
         "HubVNetName": 
         {
-        "value": "HubVNet"
+            "value": "HubVNet"
+        },
+        "VNetGatewayType":
+        {
+            "value": "PolicyBased"
         }
     }
 }
